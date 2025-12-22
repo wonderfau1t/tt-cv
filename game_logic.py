@@ -1,146 +1,141 @@
-# game_logic.py
 import numpy as np
-from enum import Enum
-from collections import deque
 
+TABLE_W = 2740
+TABLE_H = 1525
 
-class EventType(Enum):
-    BOUNCE = "Bounce"
-    HIT = "Hit"
-    NET = "Net"
-    OUT = "Out"
-    SERVE = "Serve"
-    POINT_WON = "Point"  # очко выиграно (мяч вышел за пределы после валидного отскока)
+MID_X = TABLE_W // 2
+MID_Y = TABLE_H // 2
 
-
-# Состояние мяча для отслеживания событий
 class BallState:
-    def __init__(self):
-        # История позиций мяча в топ-вью (x, y)
-        self.history = deque(maxlen=15)  # последние 15 кадров достаточно
-
-        # Текущее состояние розыгрыща
-        self.last_bounce_side = None  # 1 или 2 — сторона последнего отскока
-        self.last_hit_side = None  # сторона последнего удара
-        self.serve_detected = False
+    def __init__(self, max_history=10, alpha=0.6):
+        self.history = []
+        self.filtered = None
+        self.alpha = alpha
+        self.max_history = max_history
+        self.cooldown = 0
         self.last_event = None
-        self.frames_since_bounce = 0
-        self.frames_out = 0
-
-        # Параметры стола (в пикселях после гомографии)
-        self.TABLE_W = 2740
-        self.TABLE_H = 1525
-        self.MID_X = self.TABLE_W // 2
-        self.MID_Y = self.TABLE_H // 2
-
-        # Пороги
-        self.BOUNCE_THRESHOLD = 30  # мин. изменение скорости по Y для отскока
-        self.HIT_SPEED_THRESHOLD = 80  # резкое ускорение для удара
-        self.NET_Y_TOLERANCE = 60  # сколько пикселей вокруг MID_Y считаем сеткой
-        self.OUT_TOLERANCE = 100  # сколько кадров мяч может быть за столом до OUT
-
-    def get_side(self, x):
-        """Возвращает сторону стола: 1 (левая) или 2 (правая)"""
-        return 1 if x < self.MID_X else 2
-
-    def is_inside_table(self, x, y):
-        """Проверяет, находится ли точка внутри стола"""
-        return (0 <= x <= self.TABLE_W) and (0 <= y <= self.TABLE_H)
 
     def update(self, x, y):
-        """
-        Обновляет состояние мяча новой позицией (x, y) в топ-вью.
-        Возвращает строку события, если оно произошло в этом кадре.
-        """
-        event = None
-
-        if not self.is_inside_table(x, y):
-            self.frames_out += 1
+        if self.filtered is None:
+            self.filtered = (x, y)
         else:
-            self.frames_out = 0
+            fx, fy = self.filtered
+            fx = self.alpha * x + (1 - self.alpha) * fx
+            fy = self.alpha * y + (1 - self.alpha) * fy
+            self.filtered = (fx, fy)
 
-        # Добавляем точку в историю
-        self.history.append((x, y))
+        self.history.append(self.filtered)
+        if len(self.history) > self.max_history:
+            self.history.pop(0)
 
-        if len(self.history) < 3:
-            return None  # недостаточно данных
+def speed(p1, p2):
+    dx = p2[0] - p1[0]
+    dy = p2[1] - p1[1]
+    return np.hypot(dx, dy)
 
-        # Вычисляем скорости между последними точками
-        prev2, prev1, curr = self.history[-3], self.history[-2], self.history[-1]
-        vx1 = prev1[0] - prev2[0]
-        vy1 = prev1[1] - prev2[1]
-        vx2 = curr[0] - prev1[0]
-        vy2 = curr[1] - prev1[1]
+def velocity(p1, p2):
+    return p2[0] - p1[0], p2[1] - p1[1]
 
-        speed_prev = np.sqrt(vx1 ** 2 + vy1 ** 2)
-        speed_curr = np.sqrt(vx2 ** 2 + vy2 ** 2)
+def detect_bounce(history):
+    if len(history) < 4:
+        return False
 
-        # === Детекция отскока (Bounce) ===
-        if abs(vy2 - vy1) > self.BOUNCE_THRESHOLD and speed_curr > 20:
-            # Отскок обычно меняет направление по Y
-            if vy1 * vy2 < 0:  # смена знака скорости по Y
-                side = self.get_side(x)
-                self.last_bounce_side = side
-                self.frames_since_bounce = 0
-                event = EventType.BOUNCE.value + f" (side {side})"
-                self.last_event = event
+    p1, p2, p3, p4 = history[-4:]
 
-        self.frames_since_bounce += 1
+    vy1 = p2[1] - p1[1]
+    vy2 = p3[1] - p2[1]
 
-        # === Детекция удара ракеткой (Hit) ===
-        acceleration = abs(speed_curr - speed_prev)
-        if acceleration > self.HIT_SPEED_THRESHOLD and speed_curr > 50:
-            side = self.get_side(x)
-            self.last_hit_side = side
-            event = EventType.HIT.value + f" (side {side})"
-            self.last_event = event
+    s1 = speed(p1, p2)
+    s2 = speed(p2, p3)
 
-        # === Детекция касания сетки (Net) ===
-        if abs(y - self.MID_Y) < self.NET_Y_TOLERANCE:
-            if speed_curr > 30 and abs(vx2) > 20:  # мяч пересекает среднюю линию
-                event = EventType.NET.value
-                self.last_event = event
+    return vy1 > 2 and vy2 < -2 and s2 < s1 * 0.8
 
-        # === Детекция подачи (Serve) ===
-        # Подача: мяч начинает движение из нижней половины одной стороны (y > MID_Y)
-        if len(self.history) == 5 and not self.serve_detected:
-            start_y = self.history[0][1]
-            if start_y > self.MID_Y + 100:  # начиналась снизу
-                start_side = self.get_side(self.history[0][0])
-                if speed_curr > 30:
-                    event = EventType.SERVE.value + f" (side {start_side})"
-                    self.serve_detected = True
-                    self.last_event = event
+def angle(v1, v2):
+    v1 = np.array(v1)
+    v2 = np.array(v2)
+    cos = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-6)
+    return np.degrees(np.arccos(np.clip(cos, -1, 1)))
 
-        # === Детекция выхода за стол (Out / Point) ===
-        if self.frames_out > 8:  # мяч долго вне стола
-            if self.last_bounce_side is not None:
-                # Очко выигрывает игрок противоположной стороны
-                winner_side = 1 if self.last_bounce_side == 2 else 2
-                event = EventType.POINT_WON.value + f" (player {winner_side})"
-                self.last_event = event
-                # Сброс состояния для следующего розыгрыща
-                self.reset_rally()
 
-        if event:
-            return event
+def detect_hit(history, angle_thresh=60, speed_gain=1.2):
+    if len(history) < 4:
+        return False
 
+    p1, p2, p3, p4 = history[-4:]
+
+    v1 = velocity(p1, p2)
+    v2 = velocity(p3, p4)
+
+    a = angle(v1, v2)
+    s1 = speed(p1, p2)
+    s2 = speed(p3, p4)
+
+    return a > angle_thresh and s2 > s1 * speed_gain
+
+def detect_net(history, mid_y,
+               net_zone=30,
+               min_speed_before=6,
+               speed_drop_ratio=0.4,
+               hang_frames=3):
+    """
+    Детекция касания сетки:
+    мяч зависает и резко теряет скорость у линии сетки
+    """
+
+    if len(history) < hang_frames + 2:
+        return False
+
+    # Берём N последних точек
+    pts = history[-(hang_frames + 2):]
+
+    # Скорости
+    speeds = [
+        np.hypot(pts[i+1][0] - pts[i][0],
+                 pts[i+1][1] - pts[i][1])
+        for i in range(len(pts) - 1)
+    ]
+
+    # До сетки была нормальная скорость
+    if speeds[0] < min_speed_before:
+        return False
+
+    # Почти остановка
+    slow_frames = sum(s < speeds[0] * speed_drop_ratio for s in speeds[1:])
+
+    # Точки рядом с сеткой
+    near_net = all(abs(p[1] - mid_y) < net_zone for p in pts[1:-1])
+
+    return slow_frames >= hang_frames and near_net
+
+
+def inside_table(x, y):
+    return 0 < x < TABLE_W and 0 < y < TABLE_H
+
+
+def detect_out(x, y, w, h):
+    return x < 0 or x > w or y < 0 or y > h
+
+def detect_event(ball_state, x, y):
+    if ball_state.cooldown > 0:
+        ball_state.cooldown -= 1
         return None
 
-    def reset_rally(self):
-        """Сброс состояния после завершения розыгрыща"""
-        self.history.clear()
-        self.last_bounce_side = None
-        self.last_hit_side = None
-        self.serve_detected = False
-        self.frames_since_bounce = 0
-        self.frames_out = 0
+    h = ball_state.history
 
+    if detect_out(x, y, TABLE_W, TABLE_H):
+        event = "OUT"
+    elif detect_bounce(h) and inside_table(x, y):
+        event = "BOUNCE"
+    elif detect_net(ball_state.history, MID_Y):
+        event = "NET"
+    elif detect_hit(h):
+        event = "HIT"
+    else:
+        event = None
 
-# Функция-обёртка для удобного использования в основном скрипте
-def detect_event(ball_state: BallState, x: int, y: int) -> str | None:
-    """
-    Вызывается каждый кадр с новой позицией мяча.
-    Возвращает строку события или None.
-    """
-    return ball_state.update(x, y)
+    if event:
+        ball_state.last_event = event
+        ball_state.cooldown = 8
+        return event
+
+    return None
