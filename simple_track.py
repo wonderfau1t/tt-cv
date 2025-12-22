@@ -117,6 +117,9 @@ event_cooldown = 0
 EVENT_COOLDOWN = 8
 
 ball_state = BallState()
+current_game = Game()
+match = Match(best_of=5)
+rally = RallyFSM()
 
 while cap.isOpened():
     ret, frame = cap.read()
@@ -144,7 +147,7 @@ while cap.isOpened():
     # ТОЛЬКО ДЕТЕКЦИЯ (без track!) — здесь модель будет детектировать мяч как раньше
     results = model(
         source=frame,
-        conf=0.25,          # понизьте, если нужно больше детекций
+        conf=0.2,          # понизьте, если нужно больше детекций
         iou=0.7,            # NMS IoU
         verbose=False
     )[0]
@@ -200,6 +203,39 @@ while cap.isOpened():
 
                 ball_state.update(mx, my)
                 event = detect_event(ball_state, mx, my)
+                # Определяем сторону мяча
+                side = side_of_table(mx)
+
+                # Обновляем FSM розыгрыша
+                loser = rally.step(event, side)  # возвращает проигравшего розыгрыша, если розыгрыш закончился
+
+                if loser:
+                    # Победитель розыгрыша
+                    winner = LEFT if loser == RIGHT else RIGHT
+
+                    # Добавляем очко в текущую партию
+                    game_winner = current_game.add_point(winner)
+
+                    print(f"POINT → {'LEFT' if winner == LEFT else 'RIGHT'}")
+                    print(f"Current Game Score: {current_game.score}")
+
+                    # Проверяем, закончилась ли партия
+                    if current_game.finished:
+                        match.games_won[game_winner] += 1
+                        print(f"Game finished! Winner: {'LEFT' if game_winner == LEFT else 'RIGHT'}")
+                        print(f"Match score: {match.games_won}")
+
+                        # Проверяем, закончился ли матч
+                        if match.games_won[game_winner] >= match.games_to_win:
+                            match.finished = True
+                            match.winner = game_winner
+                            print(f"MATCH FINISHED → Winner: {'LEFT' if match.winner == LEFT else 'RIGHT'}")
+                        else:
+                            # Начинаем новую партию
+                            current_game = Game()
+
+                    # Сбрасываем FSM для следующего розыгрыша
+                    rally.reset()
 
                 if event:
                     print("EVENT:", event)
@@ -261,6 +297,15 @@ while cap.isOpened():
     # Уменьшаем для отображения
     frame_show = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
     top_view_show = cv2.resize(top_view, (0, 0), fx=0.25, fy=0.25)
+    cv2.putText(
+        top_view,
+        f"{current_game.score[LEFT]} : {current_game.score[RIGHT]}",
+        (TABLE_W // 2 - 60, 50),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.5,
+        (255, 255, 255),
+        3
+    )
 
     cv2.imshow("Tracking (Camera View)", frame_show)
     cv2.imshow("Top View (Homography)", top_view_show)
