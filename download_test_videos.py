@@ -13,7 +13,7 @@ if __name__ == "__main__":
 
     common_url = "https://lab.osai.ai/datasets/openttgames/data/"
 
-    test_video_filenames = ["test_{}.mp4".format(i) for i in range(1, 7)]  # 1 - 7
+    test_video_filenames = ["test_{}.mp4".format(i) for i in range(4, 5)]  # 1 - 7
 
     for video_fn in test_video_filenames:
         if not os.path.isfile(os.path.join(videos_dir, video_fn)):
