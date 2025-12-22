@@ -5,6 +5,7 @@ from ultralytics.models import YOLO
 import cv2
 import numpy as np
 import argparse
+from game_logic import *
 
 def load_table_corners(json_path):
     """
@@ -105,6 +106,18 @@ if homography_matrix is None:
 top_view_trajectories = {}
 MAX_TOP_VIEW_POINTS = 50
 
+# История мяча
+ball_history = []
+
+MAX_HISTORY = 10
+
+# Флаги
+last_event = None
+event_cooldown = 0
+EVENT_COOLDOWN = 8
+
+ball_state = BallState()
+
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
@@ -184,6 +197,22 @@ while cap.isOpened():
                 mapped_pt = cv2.perspectiveTransform(pt, homography_matrix)[0][0]
 
                 mx, my = int(mapped_pt[0]), int(mapped_pt[1])
+
+                ball_state.update(mx, my)
+                event = detect_event(ball_state, mx, my)
+
+                if event:
+                    print("EVENT:", event)
+                if ball_state.last_event:
+                    cv2.putText(
+                        top_view,
+                        f"EVENT: {ball_state.last_event}",
+                        (30, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1.2,
+                        (0, 0, 255),
+                        3
+                    )
 
                 # Фиксированный ID (один мяч)
                 track_id = 0
