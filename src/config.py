@@ -1,0 +1,10 @@
+WIDTH = 1280
+HEIGHT = 720
+FPS = 30
+
+FRAME_SIZE = WIDTH * HEIGHT * 3
+INPUT_QUEUE_SIZE = 120     # 4 секунды
+OUTPUT_QUEUE_SIZE = 120
+
+RTSP_INPUT = "rtsp://147.45.159.99:8554/live/tennis"
+RTSP_OUTPUT = "rtsp://147.45.159.99:8554/live/processed_tennis"
